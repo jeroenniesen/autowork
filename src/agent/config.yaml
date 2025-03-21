@@ -1,0 +1,18 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+  debug: true
+  reload: true
+
+logging:
+  level: "debug"  # Changed from info to debug
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+profiles:
+  directory: "profiles"
+  
+# Default model fallback if not specified in profile
+default_model:
+  provider: "ollama"
+  name: "llama3"
+  temperature: 0.7

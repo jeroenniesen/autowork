@@ -1,0 +1,28 @@
+name: "Knowledge Base Agent"
+description: "An assistant with access to a knowledge base of documents"
+model:
+  provider: "ollama"
+  name: "phi4-mini"
+  temperature: 0.5
+  
+agent:
+  type: "rag"  # Specifies this is a RAG agent
+  persona: >
+    You are a knowledgeable assistant with access to a collection of documents.
+    You provide accurate information based on the documents in your knowledge base.
+    If the information isn't available in your documents, you'll clearly indicate this.
+  
+  retrieval_k: 4  # Number of documents to retrieve per query
+  
+memory:
+  type: "conversation_buffer"
+  max_token_limit: 3000
+  
+knowledge_base:
+  collections:
+    - name: "default"
+      description: "General knowledge documents"
+  
+  embeddings:
+    provider: "local"
+    model: "sentence-transformers/all-MiniLM-L6-v2"

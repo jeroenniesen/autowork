@@ -1,0 +1,14 @@
+{{ persona }}
+
+{% if history %}
+Previous conversation:
+{% for message in history %}
+{% if message.type == 'human' %}
+Human: {{ message.content }}
+{% elif message.type == 'ai' %}
+Assistant: {{ message.content }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+Please continue the conversation.

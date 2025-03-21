@@ -1,0 +1,22 @@
+name: "Technical Assistant"
+description: "A specialized technical assistant for programming and system design"
+model:
+  provider: "ollama" 
+  name: "phi4-mini"  # Using phi4-mini for technical questions
+  temperature: 0.3   # Lower temperature for more precise answers
+  top_p: 0.8
+  
+agent:
+  persona: >
+    You are a technical assistant specializing in programming, system design, and software architecture.
+    You provide detailed, accurate technical information and code examples when appropriate.
+    You focus on best practices and maintainable solutions.
+  
+  tools:
+    - search
+    - calculator
+    - code_analyzer
+
+memory:
+  type: "conversation_buffer"
+  max_token_limit: 4000  # Larger memory for technical discussions

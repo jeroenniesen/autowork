@@ -1,0 +1,35 @@
+version: '3.8'
+services:
+  app:
+    build: 
+      context: ./agent
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./agent/data:/app/data
+      - ./agent/profiles:/app/profiles
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - REDIS_URL=redis://redis:6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+
+  web:
+    build:
+      context: ./web
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
