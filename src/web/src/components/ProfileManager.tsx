@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -18,11 +18,20 @@ import {
   Select,
   MenuItem,
   SelectChangeEvent,
+  Chip,
+  OutlinedInput,
 } from '@mui/material';
 import { Delete as DeleteIcon, Edit as EditIcon } from '@mui/icons-material';
+import axios from 'axios';
 import { Profile, ProfileConfig, ProfileCreateRequest } from '../types';
 
 const API_URL = '/api';
+
+interface KnowledgeSet {
+  name: string;
+  description: string;
+  document_count: number;
+}
 
 interface ProfileManagerProps {
   open: boolean;
@@ -49,6 +58,7 @@ const defaultProfileConfig: ProfileConfig = {
     type: 'conversation_buffer',
     max_token_limit: 2000,
   },
+  knowledge_sets: [],
 };
 
 const ProfileManager: React.FC<ProfileManagerProps> = ({
@@ -61,6 +71,20 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
 }) => {
   const [editingProfile, setEditingProfile] = useState<ProfileConfig | null>(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
+  const [knowledgeSets, setKnowledgeSets] = useState<KnowledgeSet[]>([]);
+
+  useEffect(() => {
+    fetchKnowledgeSets();
+  }, []);
+
+  const fetchKnowledgeSets = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/knowledge-sets`);
+      setKnowledgeSets(response.data.knowledge_sets);
+    } catch (error) {
+      console.error('Error fetching knowledge sets:', error);
+    }
+  };
 
   const handleCreate = () => {
     setEditingProfile({ ...defaultProfileConfig });
@@ -77,7 +101,8 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
         description: data.description,
         model: data.config.model,
         agent: data.config.agent,
-        memory: data.config.memory
+        memory: data.config.memory,
+        knowledge_sets: data.config.knowledge_sets || [],
       });
       setShowEditDialog(true);
     } catch (error) {
@@ -94,6 +119,7 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
       model: editingProfile.model,
       agent: editingProfile.agent,
       memory: editingProfile.memory,
+      knowledge_sets: editingProfile.knowledge_sets,
     };
 
     try {
@@ -110,16 +136,6 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
     }
   };
 
-  const handleDelete = async (profileName: string) => {
-    if (window.confirm(`Are you sure you want to delete profile "${profileName}"?`)) {
-      try {
-        await onDeleteProfile(profileName);
-      } catch (error) {
-        console.error('Error deleting profile:', error);
-      }
-    }
-  };
-
   const handleModelProviderChange = (event: SelectChangeEvent<string>) => {
     if (!editingProfile) return;
     setEditingProfile({
@@ -127,6 +143,25 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
       model: {
         ...editingProfile.model,
         provider: event.target.value,
+      },
+    });
+  };
+
+  const handleKnowledgeSetsChange = (event: SelectChangeEvent<string[]>) => {
+    if (!editingProfile) return;
+    setEditingProfile({
+      ...editingProfile,
+      knowledge_sets: event.target.value as string[],
+    });
+  };
+
+  const handleAgentTypeChange = (event: SelectChangeEvent<string>) => {
+    if (!editingProfile) return;
+    setEditingProfile({
+      ...editingProfile,
+      agent: {
+        ...editingProfile.agent,
+        type: event.target.value,
       },
     });
   };
@@ -153,7 +188,7 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
                 </IconButton>
                 <IconButton
                   edge="end"
-                  onClick={() => handleDelete(profile.name)}
+                  onClick={() => onDeleteProfile(profile.name)}
                   disabled={profile.name === 'default'}
                 >
                   <DeleteIcon />
@@ -219,6 +254,17 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
             />
             
             <Typography variant="h6" sx={{ mt: 2 }}>Agent Configuration</Typography>
+            <FormControl fullWidth>
+              <InputLabel>Type</InputLabel>
+              <Select
+                value={editingProfile?.agent.type || 'conversation'}
+                onChange={handleAgentTypeChange}
+                label="Type"
+              >
+                <MenuItem value="conversation">Conversation</MenuItem>
+                <MenuItem value="rag">RAG</MenuItem>
+              </Select>
+            </FormControl>
             <TextField
               label="Persona"
               multiline
@@ -229,20 +275,34 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
                 agent: { ...prev.agent, persona: e.target.value }
               } : null)}
             />
-            <FormControl fullWidth>
-              <InputLabel>Type</InputLabel>
-              <Select
-                value={editingProfile?.agent.type || 'conversation'}
-                onChange={(e) => setEditingProfile(prev => prev ? {
-                  ...prev,
-                  agent: { ...prev.agent, type: e.target.value }
-                } : null)}
-                label="Type"
-              >
-                <MenuItem value="conversation">Conversation</MenuItem>
-                <MenuItem value="rag">RAG</MenuItem>
-              </Select>
-            </FormControl>
+
+            {editingProfile?.agent.type === 'rag' && (
+              <>
+                <Typography variant="h6" sx={{ mt: 2 }}>Knowledge Sets</Typography>
+                <FormControl fullWidth>
+                  <InputLabel>Knowledge Sets</InputLabel>
+                  <Select
+                    multiple
+                    value={editingProfile?.knowledge_sets || []}
+                    onChange={handleKnowledgeSetsChange}
+                    input={<OutlinedInput label="Knowledge Sets" />}
+                    renderValue={(selected) => (
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                        {(selected as string[]).map((value) => (
+                          <Chip key={value} label={value} />
+                        ))}
+                      </Box>
+                    )}
+                  >
+                    {knowledgeSets.map((ks) => (
+                      <MenuItem key={ks.name} value={ks.name}>
+                        {ks.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </>
+            )}
           </Box>
         </DialogContent>
         <DialogActions>

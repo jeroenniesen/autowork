@@ -28,6 +28,7 @@ export interface ProfileConfig {
     type: string;
     max_token_limit: number;
   };
+  knowledge_sets?: string[];
 }
 
 export interface ProfileCreateRequest {
@@ -36,4 +37,13 @@ export interface ProfileCreateRequest {
   model: Record<string, any>;
   agent: Record<string, any>;
   memory?: Record<string, any>;
+  knowledge_sets?: string[];
+}
+
+export interface KnowledgeSet {
+  name: string;
+  description: string;
+  document_count: number;
+  created_at: string;
+  assigned_profiles: string[];
 }

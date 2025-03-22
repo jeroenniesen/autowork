@@ -1,5 +1,6 @@
 import uuid
 import yaml
+import json
 import logging
 import os
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends
@@ -9,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from langchain_core.runnables import RunnableWithMessageHistory
 import redis
 from datetime import datetime
+from langchain_community.vectorstores import Chroma  # Add the missing import here
 
 from src.config.loader import ConfigLoader
 from src.models.model_factory import ModelFactory
@@ -19,7 +21,8 @@ from src.utils.vector_store import VectorStoreManager
 from src.schemas.api import (
     MessageRequest, MessageResponse, ProfileInfo, ProfilesListResponse,
     ProfileCreate, ProfileResponse, ProfileUpdateResponse,
-    SessionInfo, SessionListResponse, ChatMessage, ChatHistoryResponse
+    SessionInfo, SessionListResponse, ChatMessage, ChatHistoryResponse,
+    KnowledgeSetInfo, KnowledgeSetCreate, KnowledgeSetResponse, KnowledgeSetsListResponse
 )
 from src.agents.chat_memory import RedisChatMessageHistory
 
@@ -124,7 +127,11 @@ async def create_profile(profile: ProfileCreate):
         }
         if profile.memory:
             config["memory"] = profile.memory
-
+        
+        # Add knowledge_sets if they exist
+        if profile.knowledge_sets:
+            config["knowledge_sets"] = profile.knowledge_sets
+            
         # Save the profile
         config_loader.save_profile(profile.name, config)
         
@@ -170,7 +177,11 @@ async def update_profile(profile_name: str, profile: ProfileCreate):
         }
         if profile.memory:
             config["memory"] = profile.memory
-
+            
+        # Add knowledge_sets if they exist
+        if profile.knowledge_sets:
+            config["knowledge_sets"] = profile.knowledge_sets
+            
         # Save the updated profile
         config_loader.save_profile(profile_name, config)
         
@@ -238,72 +249,92 @@ async def chat(request: MessageRequest):
             # Create LLM
             llm = ModelFactory.create_llm(model_config)
             
-            # Create a message history factory using Redis
-            def create_history():
-                return RedisChatMessageHistory(
-                    session_id=session_id,
-                    redis_url=redis_url,
-                    ttl=redis_ttl
-                )
-
+            # Create a Redis-based message history
+            history = RedisChatMessageHistory(
+                session_id=session_id,
+                redis_url=redis_url,
+                ttl=redis_ttl
+            )
+            
+            # Create a message history factory
+            def get_session_history():
+                return history
+            
             if agent_type == "rag":
                 # Create RAG agent
-                kb_config = profile_config.get("knowledge_base", {})
-                collection_name = kb_config.get("collections", [{}])[0].get("name", "default")
-                
-                # Try to load or create vector store
-                try:
-                    vector_store = vector_store_manager.load_vector_store(collection_name)
-                    logger.info(f"Loaded existing vector store '{collection_name}'")
-                except FileNotFoundError:
-                    # Create an empty vector store if it doesn't exist
-                    vector_store = vector_store_manager.create_vector_store([], collection_name)
-                    logger.info(f"Created new empty vector store '{collection_name}'")
-                
-                # Store vector store for future reference
-                vector_stores[collection_name] = vector_store
-                
-                # Create RAG agent with Redis-based conversation history
+                knowledge_sets = profile_config.get("knowledge_sets", [])
+                if not knowledge_sets:
+                    logger.warning(f"No knowledge sets configured for RAG agent in profile {request.profile_name}")
+                    knowledge_sets = ["default"]
+
+                # Load all configured vector stores
+                vector_stores_list = []
+                for collection_name in knowledge_sets:
+                    try:
+                        vector_store = vector_store_manager.load_vector_store(collection_name)
+                        vector_stores_list.append(vector_store)
+                        vector_stores[collection_name] = vector_store
+                        logger.info(f"Loaded vector store '{collection_name}' for RAG agent")
+                    except FileNotFoundError:
+                        logger.warning(f"Vector store '{collection_name}' not found, skipping")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error loading vector store '{collection_name}': {str(e)}")
+                        continue
+
+                if not vector_stores_list:
+                    logger.warning("No vector stores loaded, creating empty default store")
+                    vector_store = vector_store_manager.create_vector_store([], "default")
+                    vector_stores_list.append(vector_store)
+                    vector_stores["default"] = vector_store
+
+                # Merge multiple vector stores if needed
+                if len(vector_stores_list) > 1:
+                    # Use the first store as base and merge others into it
+                    main_store = vector_stores_list[0]
+                    vector_store_manager.merge_vector_stores(main_store, vector_stores_list[1:])
+                    vector_store = main_store
+                else:
+                    vector_store = vector_stores_list[0]
+
+                # Create RAG agent chain
                 chain = RAGAgentFactory.create_conversation_rag_agent(
                     llm=llm,
                     vector_store=vector_store,
                     config=agent_config
                 )
             else:
-                # Create regular conversation agent with Redis-based history
+                # Create regular conversation agent chain
                 chain = AgentFactory.create_agent_from_template(
                     llm=llm,
                     config=agent_config
                 )
             
-            # Wrap the chain with Redis-based message history
+            # Create the agent with message history properly configured for each agent type
             agent = RunnableWithMessageHistory(
                 chain,
-                create_history,
+                get_session_history,  # Use the Redis-based history
                 input_messages_key="input",
-                history_messages_key="history"
+                history_messages_key="history",
+                output_messages_key="output"
             )
             
             logger.info(f"Created new {agent_type} agent session: {session_id} using profile {request.profile_name}")
-            
-            # Store the agent in the session
             sessions[session_id] = agent
         
         # Get the agent for this session
         agent = sessions[session_id]
         
-        # Process the message using the new RunnableWithMessageHistory interface
+        # Process the message
         logger.debug(f"Processing message for session {session_id}: {request.text[:30]}...")
         
+        # Invoke the chain with the message
         response = await agent.ainvoke(
             {"input": request.text},
             config={"configurable": {"session_id": session_id}}
         )
         
-        # Debug the response before converting
-        logger.debug(f"Got raw response for session {session_id}: {response}")
-        
-        # Extract the response content properly
+        # Extract the response content
         if hasattr(response, 'content'):
             response_text = response.content
             logger.debug("Extracted response from content attribute")
@@ -317,12 +348,10 @@ async def chat(request: MessageRequest):
             response_text = str(response)
             logger.debug("Converted response to string")
         
-        # Clean up any potential formatting without losing content
+        # Clean up response
         response_text = response_text.strip()
-        
         logger.debug(f"Final response text for session {session_id}: {response_text[:50]}...")
         
-        # Return the response
         return MessageResponse(
             response=response_text,
             session_id=session_id
@@ -335,6 +364,184 @@ async def chat(request: MessageRequest):
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Knowledge Set Management Endpoints
+@app.get("/knowledge-sets", response_model=KnowledgeSetsListResponse)
+async def list_knowledge_sets():
+    """List all available knowledge sets."""
+    try:
+        # Get all knowledge sets from Redis
+        knowledge_sets = []
+        for key in redis_client.keys("knowledge_set:*"):
+            name = key.decode('utf-8').split(':')[1]
+            data = redis_client.hgetall(f"knowledge_set:{name}")
+            if data:
+                # Get document count from vector store
+                doc_count = 0
+                try:
+                    # Use sanitized collection name for Chroma
+                    sanitized_name = vector_store_manager.sanitize_collection_name(name)
+                    vs_path = os.path.join(vector_store_manager.persist_directory, name)
+                    if os.path.exists(vs_path):
+                        vs = Chroma(
+                            persist_directory=vs_path,
+                            embedding_function=vector_store_manager.embedding_model,
+                            collection_name=sanitized_name
+                        )
+                        doc_count = vs._collection.count()
+                except Exception as e:
+                    logger.warning(f"Error getting document count for {name}: {str(e)}")
+                    pass
+
+                # Get assigned profiles
+                assigned_profiles = []
+                for profile_key in redis_client.keys("profile:*"):
+                    profile_name = profile_key.decode('utf-8').split(':')[1]
+                    profile_data = redis_client.get(profile_key)
+                    if profile_data:
+                        profile_config = json.loads(profile_data)
+                        if name in profile_config.get('knowledge_sets', []):
+                            assigned_profiles.append(profile_name)
+
+                knowledge_sets.append(KnowledgeSetInfo(
+                    name=name,
+                    description=data.get(b'description', b'').decode('utf-8'),
+                    document_count=doc_count,
+                    created_at=datetime.fromisoformat(data.get(b'created_at', b'2024-01-01T00:00:00').decode('utf-8')),
+                    assigned_profiles=assigned_profiles
+                ))
+
+        return KnowledgeSetsListResponse(knowledge_sets=knowledge_sets)
+    except Exception as e:
+        logger.error(f"Error listing knowledge sets: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/knowledge-sets", response_model=KnowledgeSetResponse)
+async def create_knowledge_set(knowledge_set: KnowledgeSetCreate):
+    """Create a new knowledge set."""
+    try:
+        # Check if knowledge set already exists
+        if redis_client.exists(f"knowledge_set:{knowledge_set.name}"):
+            raise HTTPException(status_code=400, detail=f"Knowledge set '{knowledge_set.name}' already exists")
+
+        # Create empty vector store for the knowledge set
+        vector_store_manager.create_vector_store([], knowledge_set.name)
+
+        # Store metadata in Redis
+        redis_client.hmset(f"knowledge_set:{knowledge_set.name}", {
+            'description': knowledge_set.description,
+            'created_at': datetime.now().isoformat()
+        })
+
+        return KnowledgeSetResponse(
+            name=knowledge_set.name,
+            description=knowledge_set.description,
+            document_count=0,
+            created_at=datetime.now(),
+            assigned_profiles=[]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating knowledge set: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/knowledge-sets/{name}", response_model=KnowledgeSetResponse)
+async def get_knowledge_set(name: str):
+    """Get information about a specific knowledge set."""
+    try:
+        # Check if knowledge set exists
+        if not redis_client.exists(f"knowledge_set:{name}"):
+            raise HTTPException(status_code=404, detail=f"Knowledge set '{name}' not found")
+
+        # Get metadata from Redis
+        data = redis_client.hgetall(f"knowledge_set:{name}")
+
+        # Get document count from vector store
+        doc_count = 0
+        try:
+            vs = vector_store_manager.load_vector_store(name)
+            doc_count = vs._collection.count()
+        except FileNotFoundError:
+            pass
+
+        # Get assigned profiles
+        assigned_profiles = []
+        for profile_key in redis_client.keys("profile:*"):
+            profile_name = profile_key.decode('utf-8').split(':')[1]
+            profile_data = redis_client.get(profile_key)
+            if profile_data:
+                profile_config = json.loads(profile_data)
+                if name in profile_config.get('knowledge_sets', []):
+                    assigned_profiles.append(profile_name)
+
+        return KnowledgeSetResponse(
+            name=name,
+            description=data.get(b'description', b'').decode('utf-8'),
+            document_count=doc_count,
+            created_at=datetime.fromisoformat(data.get(b'created_at', b'2024-01-01T00:00:00').decode('utf-8')),
+            assigned_profiles=assigned_profiles
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting knowledge set: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/knowledge-sets/{name}", response_model=KnowledgeSetResponse)
+async def update_knowledge_set(name: str, knowledge_set: KnowledgeSetCreate):
+    """Update a knowledge set."""
+    try:
+        # Check if knowledge set exists
+        if not redis_client.exists(f"knowledge_set:{name}"):
+            raise HTTPException(status_code=404, detail=f"Knowledge set '{name}' not found")
+
+        # Only update description (name changes not allowed)
+        redis_client.hset(f"knowledge_set:{name}", 'description', knowledge_set.description)
+
+        # Return updated knowledge set
+        return await get_knowledge_set(name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating knowledge set: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/knowledge-sets/{name}")
+async def delete_knowledge_set(name: str):
+    """Delete a knowledge set."""
+    try:
+        # Check if knowledge set exists
+        if not redis_client.exists(f"knowledge_set:{name}"):
+            raise HTTPException(status_code=404, detail=f"Knowledge set '{name}' not found")
+
+        # Check if knowledge set is assigned to any profiles
+        for profile_key in redis_client.keys("profile:*"):
+            profile_data = redis_client.get(profile_key)
+            if profile_data:
+                profile_config = json.loads(profile_data)
+                if name in profile_config.get('knowledge_sets', []):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot delete knowledge set '{name}' as it is assigned to one or more profiles"
+                    )
+
+        # Delete vector store
+        vs_path = os.path.join(vector_store_manager.persist_directory, name)
+        if os.path.exists(vs_path):
+            import shutil
+            shutil.rmtree(vs_path)
+
+        # Delete metadata from Redis
+        redis_client.delete(f"knowledge_set:{name}")
+
+        return {"status": "success", "message": f"Knowledge set '{name}' deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting knowledge set: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Modify the existing upload-document endpoint
 @app.post("/upload-document/{collection_name}")
 async def upload_document(
     collection_name: str,
@@ -342,15 +549,12 @@ async def upload_document(
     chunk_size: int = Form(1000),
     chunk_overlap: int = Form(200)
 ):
-    """Upload a document to a vector store collection.
-    
-    Args:
-        collection_name: Name of the collection to add the document to
-        file: Document file to upload
-        chunk_size: Size of document chunks
-        chunk_overlap: Overlap between chunks
-    """
+    """Upload a document to a knowledge set (collection)."""
     try:
+        # Check if knowledge set exists
+        if not redis_client.exists(f"knowledge_set:{collection_name}"):
+            raise HTTPException(status_code=404, detail=f"Knowledge set '{collection_name}' not found")
+            
         # Save the uploaded file
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as f:
@@ -366,30 +570,37 @@ async def upload_document(
         )
         
         # Get or create vector store
-        if collection_name not in vector_stores:
-            try:
-                vector_store = vector_store_manager.load_vector_store(collection_name)
-                logger.info(f"Loaded existing vector store '{collection_name}'")
-            except FileNotFoundError:
-                # Create a new vector store
-                vector_store = vector_store_manager.create_vector_store(chunks, collection_name)
-                logger.info(f"Created new vector store '{collection_name}' with {len(chunks)} chunks")
-                vector_stores[collection_name] = vector_store
-                return {"status": "success", "message": f"Created new vector store with {len(chunks)} document chunks"}
-        else:
-            # Use existing vector store
-            vector_store = vector_stores[collection_name]
-            # Add documents to it
+        try:
+            vector_store = vector_store_manager.load_vector_store(collection_name)
+            logger.info(f"Loaded existing vector store '{collection_name}'")
+            # Add documents to existing store
             vector_store_manager.add_documents(vector_store, chunks)
-            logger.info(f"Added {len(chunks)} chunks to vector store '{collection_name}'")
+            vector_store.persist()  # Make sure to persist after adding documents
+            logger.info(f"Added and persisted {len(chunks)} chunks to vector store '{collection_name}'")
+        except FileNotFoundError:
+            # Create a new vector store
+            vector_store = vector_store_manager.create_vector_store(chunks, collection_name)
+            vector_store.persist()  # Make sure to persist the new store
+            logger.info(f"Created and persisted new vector store '{collection_name}' with {len(chunks)} chunks")
+        
+        # Store vector store for future reference
+        vector_stores[collection_name] = vector_store
+        
+        # Get updated document count
+        doc_count = vector_store._collection.count()
         
         return {
             "status": "success",
-            "message": f"Added {len(chunks)} document chunks to vector store '{collection_name}'"
+            "message": f"Added {len(chunks)} document chunks to knowledge set '{collection_name}'",
+            "total_documents": doc_count
         }
     except Exception as e:
         logger.error(f"Error uploading document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up uploaded file
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 @app.get("/sessions", response_model=SessionListResponse)
 async def list_sessions():
@@ -464,6 +675,81 @@ async def delete_session(session_id: str):
     except Exception as e:
         logger.error(f"Error deleting session {session_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Debugging endpoint to get knowledge set info from Redis and disk
+@app.get("/debug/knowledge-sets")
+async def debug_knowledge_sets():
+    """Debug endpoint to help diagnose knowledge set issues."""
+    try:
+        # Get Redis info
+        redis_keys = redis_client.keys("knowledge_set:*")
+        redis_knowledge_sets = []
+        for key in redis_keys:
+            name = key.decode('utf-8').split(':')[1]
+            data = redis_client.hgetall(f"knowledge_set:{name}")
+            redis_knowledge_sets.append({
+                "name": name,
+                "data": {k.decode('utf-8'): v.decode('utf-8') for k, v in data.items()} if data else {}
+            })
+        
+        # Get disk info
+        vector_store_dir = vector_store_manager.persist_directory
+        disk_knowledge_sets = []
+        if os.path.exists(vector_store_dir):
+            for item in os.listdir(vector_store_dir):
+                item_path = os.path.join(vector_store_dir, item)
+                if os.path.isdir(item_path):
+                    # Check if this looks like a Chroma directory
+                    has_chroma_db = os.path.exists(os.path.join(item_path, "chroma.sqlite3"))
+                    disk_knowledge_sets.append({
+                        "name": item,
+                        "path": item_path,
+                        "looks_like_chroma": has_chroma_db
+                    })
+        
+        return {
+            "redis_knowledge_sets": redis_knowledge_sets,
+            "disk_knowledge_sets": disk_knowledge_sets
+        }
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))  # Fixed closing parenthesis
+
+# Add this new endpoint to register vector stores as knowledge sets
+@app.post("/fix/knowledge-sets")
+async def fix_knowledge_sets():
+    """Fix knowledge set synchronization between disk and Redis."""
+    try:
+        # Get all vector store directories from disk
+        vector_store_dir = vector_store_manager.persist_directory
+        disk_knowledge_sets = []
+        added_count = 0
+        
+        if os.path.exists(vector_store_dir):
+            for item in os.listdir(vector_store_dir):
+                item_path = os.path.join(vector_store_dir, item)
+                if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, "chroma.sqlite3")):
+                    disk_knowledge_sets.append(item)
+                    
+                    # Check if this knowledge set is registered in Redis
+                    if not redis_client.exists(f"knowledge_set:{item}"):
+                        # Register it with default metadata
+                        redis_client.hmset(f"knowledge_set:{item}", {
+                            'description': f"Auto-registered knowledge set: {item}",
+                            'created_at': datetime.now().isoformat()
+                        })
+                        added_count += 1
+                        logger.info(f"Auto-registered knowledge set from disk: {item}")
+        
+        return {
+            "status": "success",
+            "message": f"Synchronized knowledge sets between disk and Redis",
+            "found_on_disk": disk_knowledge_sets,
+            "newly_registered": added_count
+        }
+    except Exception as e:
+        logger.error(f"Error fixing knowledge sets: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))  # Fixed the unclosed parenthesis
 
 @app.on_event("startup")
 async def startup():

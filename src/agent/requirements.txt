@@ -21,5 +21,5 @@ bs4>=0.0.1
 pandas>=2.0.0
 numpy>=1.24.0
 tiktoken>=0.5.0  # For token counting in ConversationTokenBufferMemory
-redis>=5.0.0
-msgpack>=1.0.5
+redis>=5.0.0     # For Redis-based chat history and metadata storage
+msgpack>=1.0.5   # For efficient binary serialization

@@ -57,6 +57,7 @@ class ProfileCreate(BaseModel):
     model: Dict[str, Any] = Field(..., description="Model configuration")
     agent: Dict[str, Any] = Field(..., description="Agent configuration")
     memory: Optional[Dict[str, Any]] = Field(None, description="Memory configuration")
+    knowledge_sets: Optional[List[str]] = Field(default=[], description="List of knowledge set names assigned to this profile")
 
 
 class ProfileResponse(BaseModel):
@@ -71,3 +72,32 @@ class ProfileUpdateResponse(BaseModel):
     status: str = Field(..., description="Status of the update operation")
     message: str = Field(..., description="Message describing the result")
     profile: ProfileResponse = Field(..., description="Updated profile information")
+
+
+class KnowledgeSetInfo(BaseModel):
+    """Schema for knowledge set information."""
+    name: str = Field(..., description="Name of the knowledge set")
+    description: str = Field(..., description="Description of the knowledge set")
+    document_count: int = Field(..., description="Number of documents in the knowledge set")
+    created_at: datetime = Field(..., description="When the knowledge set was created")
+    assigned_profiles: List[str] = Field(default=[], description="List of profile names using this knowledge set")
+
+
+class KnowledgeSetCreate(BaseModel):
+    """Schema for creating a knowledge set."""
+    name: str = Field(..., description="Name of the knowledge set")
+    description: str = Field(..., description="Description of the knowledge set")
+
+
+class KnowledgeSetResponse(BaseModel):
+    """Schema for knowledge set response."""
+    name: str = Field(..., description="Name of the knowledge set")
+    description: str = Field(..., description="Description of the knowledge set")
+    document_count: int = Field(..., description="Number of documents in the knowledge set")
+    created_at: datetime = Field(..., description="When the knowledge set was created")
+    assigned_profiles: List[str] = Field(default=[], description="List of profile names using this knowledge set")
+
+
+class KnowledgeSetsListResponse(BaseModel):
+    """Schema for listing knowledge sets."""
+    knowledge_sets: List[KnowledgeSetInfo] = Field(..., description="List of knowledge sets")

@@ -6,6 +6,7 @@ import Chat from './components/Chat';
 import TopBar from './components/TopBar';
 import SessionList from './components/SessionList';
 import ProfileManager from './components/ProfileManager';
+import KnowledgeSetManager from './components/KnowledgeSetManager';
 import { Profile, Session, ProfileCreateRequest } from './types';
 import './App.css';
 
@@ -42,6 +43,7 @@ function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [showProfileManager, setShowProfileManager] = useState(false);
+  const [showKnowledgeSetManager, setShowKnowledgeSetManager] = useState(false);
 
   const fetchSessions = async () => {
     try {
@@ -149,7 +151,10 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <div className="App">
-        <TopBar onManageProfiles={() => setShowProfileManager(true)} />
+        <TopBar 
+          onManageProfiles={() => setShowProfileManager(true)} 
+          onManageKnowledgeSets={() => setShowKnowledgeSetManager(true)}
+        />
         <div className="content-container">
           <div className="sidebar">
             <SessionList
@@ -176,6 +181,11 @@ function App() {
           onCreateProfile={handleCreateProfile}
           onUpdateProfile={handleUpdateProfile}
           onDeleteProfile={handleDeleteProfile}
+        />
+        <KnowledgeSetManager
+          open={showKnowledgeSetManager}
+          onClose={() => setShowKnowledgeSetManager(false)}
+          profiles={profiles}
         />
       </div>
     </ThemeProvider>

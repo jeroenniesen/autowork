@@ -1,6 +1,7 @@
 import os
 import logging
 import numpy as np
+import re
 from typing import List, Dict, Any, Optional
 from langchain.schema import Document
 from langchain_community.vectorstores import Chroma
@@ -62,6 +63,35 @@ class VectorStoreManager:
                 logger.warning("Using simple fallback embedding model")
                 return FakeEmbeddings(size=384)  # Using a reasonable embedding size
     
+    def sanitize_collection_name(self, name: str) -> str:
+        """Sanitize collection names to conform to Chroma requirements.
+        
+        Args:
+            name: Original collection name
+            
+        Returns:
+            Sanitized collection name meeting Chroma requirements
+        """
+        # Replace spaces with underscores
+        sanitized = name.replace(" ", "_")
+        
+        # Replace any other invalid characters
+        sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', sanitized)
+        
+        # Ensure name is between 3-63 characters
+        if len(sanitized) < 3:
+            sanitized = sanitized + "_" * (3 - len(sanitized))
+        elif len(sanitized) > 63:
+            sanitized = sanitized[:63]
+        
+        # Ensure it starts and ends with alphanumeric character
+        if not sanitized[0].isalnum():
+            sanitized = "x" + sanitized[1:]
+        if not sanitized[-1].isalnum():
+            sanitized = sanitized[:-1] + "x"
+            
+        return sanitized
+    
     def create_vector_store(self, documents: List[Document], collection_name: str) -> Chroma:
         """Create a vector store from documents.
         
@@ -72,14 +102,31 @@ class VectorStoreManager:
         Returns:
             Initialized vector store
         """
-        logger.info(f"Creating vector store with {len(documents)} documents in collection '{collection_name}'")
+        sanitized_name = self.sanitize_collection_name(collection_name)
+        logger.info(f"Creating vector store with {len(documents)} documents in collection '{sanitized_name}' (original: '{collection_name}')")
         
-        return Chroma.from_documents(
-            documents=documents,
-            embedding=self.embedding_model,
-            persist_directory=os.path.join(self.persist_directory, collection_name),
-            collection_name=collection_name
-        )
+        # Create the directory for this collection
+        collection_dir = os.path.join(self.persist_directory, collection_name)
+        os.makedirs(collection_dir, exist_ok=True)
+        
+        if not documents:
+            # Handle empty document list by creating an empty Chroma collection
+            logger.info(f"Creating empty vector store for collection '{sanitized_name}'")
+            vector_store = Chroma(
+                collection_name=sanitized_name,
+                embedding_function=self.embedding_model,
+                persist_directory=collection_dir
+            )
+            vector_store.persist()
+            return vector_store
+        else:
+            # Create from documents if we have them
+            return Chroma.from_documents(
+                documents=documents,
+                embedding=self.embedding_model,
+                persist_directory=collection_dir,
+                collection_name=sanitized_name
+            )
     
     def load_vector_store(self, collection_name: str) -> Chroma:
         """Load an existing vector store.
@@ -94,17 +141,18 @@ class VectorStoreManager:
             FileNotFoundError: If the vector store doesn't exist
         """
         store_path = os.path.join(self.persist_directory, collection_name)
+        sanitized_name = self.sanitize_collection_name(collection_name)
         
         if not os.path.exists(store_path):
             logger.error(f"Vector store not found at {store_path}")
             raise FileNotFoundError(f"Vector store not found at {store_path}")
         
-        logger.info(f"Loading vector store from {store_path}")
+        logger.info(f"Loading vector store from {store_path} with collection name '{sanitized_name}'")
         
         return Chroma(
             persist_directory=store_path,
             embedding_function=self.embedding_model,
-            collection_name=collection_name
+            collection_name=sanitized_name
         )
     
     def add_documents(self, vector_store: Chroma, documents: List[Document]) -> None:
@@ -114,10 +162,80 @@ class VectorStoreManager:
             vector_store: Vector store to add documents to
             documents: List of documents to add
         """
-        logger.info(f"Adding {len(documents)} documents to vector store")
-        vector_store.add_documents(documents)
-        vector_store.persist()
-    
+        if not documents:
+            logger.warning("No documents to add to vector store")
+            return
+
+        try:
+            # Ensure documents have proper IDs
+            docs_to_add = []
+            for i, doc in enumerate(documents):
+                # Convert strings to Document objects if needed
+                if isinstance(doc, str):
+                    doc = Document(page_content=doc)
+                # Add an ID if not present
+                if 'id' not in doc.metadata:
+                    doc.metadata['id'] = f"doc_{i}"
+                docs_to_add.append(doc)
+
+            logger.info(f"Adding {len(docs_to_add)} documents to vector store")
+            vector_store.add_documents(docs_to_add)
+            vector_store.persist()
+        except Exception as e:
+            logger.error(f"Error adding documents to vector store: {str(e)}")
+            raise
+
+    def get_all_documents(self, vector_store: Chroma) -> List[Document]:
+        """Get all documents from a vector store.
+        
+        Args:
+            vector_store: Vector store to get documents from
+            
+        Returns:
+            List of documents
+        """
+        try:
+            collection = vector_store._collection
+            if not collection:
+                return []
+            
+            # Get all embeddings and metadata
+            result = collection.get()
+            if not result or not result['documents']:
+                return []
+
+            # Create Document objects
+            documents = []
+            for i, (content, metadata) in enumerate(zip(result['documents'], result['metadatas'])):
+                if not metadata:
+                    metadata = {}
+                if 'id' not in metadata:
+                    metadata['id'] = f"doc_{i}"
+                documents.append(Document(page_content=content, metadata=metadata))
+            
+            return documents
+        except Exception as e:
+            logger.error(f"Error retrieving documents from vector store: {str(e)}")
+            return []
+
+    def merge_vector_stores(self, target_store: Chroma, source_stores: List[Chroma]) -> None:
+        """Merge multiple vector stores into a target store.
+        
+        Args:
+            target_store: Vector store to merge into
+            source_stores: List of vector stores to merge from
+        """
+        for source_store in source_stores:
+            try:
+                # Get all documents from source store
+                docs = self.get_all_documents(source_store)
+                if docs:
+                    logger.info(f"Adding {len(docs)} documents from source store to target")
+                    self.add_documents(target_store, docs)
+            except Exception as e:
+                logger.error(f"Error merging vector store: {str(e)}")
+                continue
+
     def similarity_search(
         self,
         vector_store: Chroma,
