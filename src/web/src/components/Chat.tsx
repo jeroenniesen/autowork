@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Box, TextField, IconButton, Paper, Typography, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
+import { Box, TextField, IconButton, Paper, Typography, Select, MenuItem, FormControl, InputLabel, CircularProgress } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import { styled } from '@mui/material/styles';
 import ReactMarkdown from 'react-markdown';
@@ -153,6 +153,7 @@ const Chat: React.FC<ChatProps> = ({ onSendMessage, sessionId, profile, profiles
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isStartingNewChat, setIsStartingNewChat] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState(profile);
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -217,13 +218,25 @@ const Chat: React.FC<ChatProps> = ({ onSendMessage, sessionId, profile, profiles
     }
   };
 
-  const handleProfileSelect = (newProfile: string) => {
+  const handleProfileSelect = async (newProfile: string) => {
     setSelectedProfile(newProfile);
+    setIsStartingNewChat(true);
+    
     // Start a new chat with the selected profile
-    onSendMessage("Hello", newProfile).catch(console.error);
+    try {
+      const response = await onSendMessage("Hello", newProfile);
+      const agentMsg = { text: response, isUser: false };
+      setMessages([agentMsg]);
+    } catch (error) {
+      console.error('Error starting new chat:', error);
+      const errorMsg = { text: "Sorry, I couldn't start a new conversation.", isUser: false };
+      setMessages([errorMsg]);
+    } finally {
+      setIsStartingNewChat(false);
+    }
   };
 
-  if (!sessionId && messages.length === 0) {
+  if (!sessionId && messages.length === 0 && !isStartingNewChat) {
     return (
       <WelcomeContainer>
         <Typography variant="h4" gutterBottom>
@@ -246,6 +259,17 @@ const Chat: React.FC<ChatProps> = ({ onSendMessage, sessionId, profile, profiles
             ))}
           </Select>
         </ProfileSelect>
+      </WelcomeContainer>
+    );
+  }
+
+  if (isStartingNewChat) {
+    return (
+      <WelcomeContainer>
+        <CircularProgress size={40} />
+        <Typography variant="body1" gutterBottom>
+          Starting new conversation with {selectedProfile} profile...
+        </Typography>
       </WelcomeContainer>
     );
   }

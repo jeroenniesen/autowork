@@ -61,6 +61,8 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [isLoadingKnowledgeSets, setIsLoadingKnowledgeSets] = useState(false);
 
   // Fetch knowledge sets when the component mounts or the dialog opens
   useEffect(() => {
@@ -70,6 +72,7 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
   }, [open]);
 
   const fetchKnowledgeSets = async () => {
+    setIsLoadingKnowledgeSets(true);
     try {
       console.log("Fetching knowledge sets...");
       const response = await axios.get(`${API_URL}/knowledge-sets`);
@@ -95,6 +98,8 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
       console.error('Error fetching knowledge sets:', error);
       setErrorMessage('Failed to load knowledge sets');
       setKnowledgeSets([]);
+    } finally {
+      setIsLoadingKnowledgeSets(false);
     }
   };
 
@@ -193,6 +198,9 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
       return;
     }
 
+    setIsUploadingDocument(true);
+    setUploadError(null);
+    
     const formData = new FormData();
     formData.append('file', selectedFile);
 
@@ -215,6 +223,8 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
     } catch (error: any) {
       console.error('Error uploading document:', error);
       setUploadError(`Error uploading document: ${error.response?.data?.detail || 'Unknown error'}`);
+    } finally {
+      setIsUploadingDocument(false);
     }
   };
 
@@ -243,6 +253,7 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
               onChange={(e) => setSelectedKnowledgeSet(e.target.value)}
               label="Knowledge Set"
               displayEmpty
+              disabled={isUploadingDocument}
             >
               <MenuItem value="" disabled>
                 <em>Select a knowledge set</em>
@@ -263,21 +274,24 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
               variant="contained"
               component="label"
               startIcon={<CloudUploadIcon />}
+              disabled={isUploadingDocument}
             >
               Select File
               <input
                 type="file"
                 hidden
                 onChange={handleFileSelect}
+                disabled={isUploadingDocument}
               />
             </Button>
             <Button
               variant="contained"
               color="primary"
               onClick={handleUpload}
-              disabled={!selectedFile || !selectedKnowledgeSet}
+              disabled={!selectedFile || !selectedKnowledgeSet || isUploadingDocument}
+              startIcon={isUploadingDocument ? <CircularProgress size={20} color="inherit" /> : undefined}
             >
-              Upload
+              {isUploadingDocument ? 'Uploading...' : 'Upload'}
             </Button>
           </Box>
           {selectedFile && (
@@ -297,41 +311,47 @@ const KnowledgeSetManager: React.FC<KnowledgeSetManagerProps> = ({
           )}
         </Box>
 
-        <List>
-          {knowledgeSets.length > 0 ? (
-            knowledgeSets.map((knowledgeSet) => (
-              <ListItem key={knowledgeSet.name}>
-                <ListItemText
-                  primary={knowledgeSet.name}
-                  secondary={
-                    <>
-                      {knowledgeSet.description}
-                      <br />
-                      Documents: {knowledgeSet.document_count}
-                      <br />
-                      Used by profiles: {knowledgeSet.assigned_profiles.join(', ') || 'None'}
-                    </>
-                  }
-                />
-                <ListItemSecondaryAction>
-                  <IconButton edge="end" onClick={() => handleEdit(knowledgeSet)}>
-                    <EditIcon />
-                  </IconButton>
-                  <IconButton
-                    edge="end"
-                    onClick={() => handleDelete(knowledgeSet.name)}
-                  >
-                    <DeleteIcon />
-                  </IconButton>
-                </ListItemSecondaryAction>
+        {isLoadingKnowledgeSets ? (
+          <Box display="flex" justifyContent="center" p={3}>
+            <CircularProgress />
+          </Box>
+        ) : (
+          <List>
+            {knowledgeSets.length > 0 ? (
+              knowledgeSets.map((knowledgeSet) => (
+                <ListItem key={knowledgeSet.name}>
+                  <ListItemText
+                    primary={knowledgeSet.name}
+                    secondary={
+                      <>
+                        {knowledgeSet.description}
+                        <br />
+                        Documents: {knowledgeSet.document_count}
+                        <br />
+                        Used by profiles: {knowledgeSet.assigned_profiles.join(', ') || 'None'}
+                      </>
+                    }
+                  />
+                  <ListItemSecondaryAction>
+                    <IconButton edge="end" onClick={() => handleEdit(knowledgeSet)}>
+                      <EditIcon />
+                    </IconButton>
+                    <IconButton
+                      edge="end"
+                      onClick={() => handleDelete(knowledgeSet.name)}
+                    >
+                      <DeleteIcon />
+                    </IconButton>
+                  </ListItemSecondaryAction>
+                </ListItem>
+              ))
+            ) : (
+              <ListItem>
+                <ListItemText primary="No knowledge sets found. Create one to get started." />
               </ListItem>
-            ))
-          ) : (
-            <ListItem>
-              <ListItemText primary="No knowledge sets found. Create one to get started." />
-            </ListItem>
-          )}
-        </List>
+            )}
+          </List>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Close</Button>
