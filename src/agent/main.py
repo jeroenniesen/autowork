@@ -11,11 +11,11 @@ from langchain_core.runnables import RunnableWithMessageHistory
 import redis
 from datetime import datetime
 from langchain_community.vectorstores import Chroma  # Add the missing import here
-
 from src.config.loader import ConfigLoader
 from src.models.model_factory import ModelFactory
 from src.agents.agent_factory import AgentFactory
 from src.agents.rag_agent import RAGAgentFactory
+from src.agents.manager_agent import ManagerAgentFactory  # Import the new manager agent factory
 from src.utils.document_utils import DocumentProcessor
 from src.utils.vector_store import VectorStoreManager
 from src.schemas.api import (
@@ -260,7 +260,58 @@ async def chat(request: MessageRequest):
             def get_session_history():
                 return history
             
-            if agent_type == "rag":
+            # Handle different agent types
+            if agent_type == "manager":
+                # Create a Manager agent that can delegate tasks to other agents
+                
+                # Collect persona information for available agent profiles
+                profile_personas = {}
+                for profile_name in agent_config.get('available_agents', []):
+                    try:
+                        agent_profile_config = config_loader.get_profile(profile_name)
+                        # Extract persona from agent configuration
+                        if agent_profile_config and 'agent' in agent_profile_config:
+                            profile_personas[profile_name] = agent_profile_config['agent'].get('persona', 
+                                                                                             f"Profile: {profile_name}")
+                    except Exception as e:
+                        logger.warning(f"Could not get persona for profile '{profile_name}': {str(e)}")
+                
+                # Function to invoke other agents from the manager
+                async def invoke_agent(text, profile_name, sub_session_id=None):
+                    """Helper to invoke other agents from the manager agent"""
+                    logger.info(f"Manager delegating task to agent profile: {profile_name}")
+                    
+                    try:
+                        # Create a new message request for the delegated task
+                        delegated_request = MessageRequest(
+                            text=text,
+                            profile_name=profile_name,
+                            session_id=sub_session_id  # Using None will create a new session
+                        )
+                        
+                        # Process the delegated request through the chat endpoint
+                        # But we need to handle it directly to avoid endpoint recursion
+                        sub_response = await process_chat_request(delegated_request)
+                        return sub_response
+                    except Exception as e:
+                        logger.error(f"Error delegating task to {profile_name}: {str(e)}")
+                        return MessageResponse(
+                            response=f"Error delegating task: {str(e)}",
+                            session_id=sub_session_id or str(uuid.uuid4())
+                        )
+                
+                # Create manager agent chain
+                chain = ManagerAgentFactory.create_manager_agent(
+                    llm=llm,
+                    config=agent_config,
+                    agent_invoker=invoke_agent,
+                    profile_personas=profile_personas  # Pass the collected personas
+                )
+                
+                logger.info(f"Created new manager agent with available profiles: {agent_config.get('available_agents', [])}")
+                logger.debug(f"Provided persona information for {len(profile_personas)} profiles")
+                
+            elif agent_type == "rag":
                 # Create RAG agent
                 knowledge_sets = profile_config.get("knowledge_sets", [])
                 if not knowledge_sets:
@@ -363,6 +414,11 @@ async def chat(request: MessageRequest):
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Helper function to process chat requests directly (used by manager agents)
+async def process_chat_request(request: MessageRequest) -> MessageResponse:
+    """Process a chat request directly without going through the endpoint."""
+    return await chat(request)
 
 # Knowledge Set Management Endpoints
 @app.get("/knowledge-sets", response_model=KnowledgeSetsListResponse)

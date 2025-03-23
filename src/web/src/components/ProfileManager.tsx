@@ -263,6 +263,7 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
               >
                 <MenuItem value="conversation">Conversation</MenuItem>
                 <MenuItem value="rag">RAG</MenuItem>
+                <MenuItem value="manager">Manager</MenuItem>
               </Select>
             </FormControl>
             <TextField
@@ -299,6 +300,80 @@ const ProfileManager: React.FC<ProfileManagerProps> = ({
                         {ks.name}
                       </MenuItem>
                     ))}
+                  </Select>
+                </FormControl>
+              </>
+            )}
+            
+            {editingProfile?.agent.type === 'manager' && (
+              <>
+                <Typography variant="h6" sx={{ mt: 2 }}>Manager Agent Configuration</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Manager agents break down complex tasks and delegate them to specialized agents.
+                </Typography>
+                
+                <FormControl fullWidth>
+                  <InputLabel>Available Agent Profiles</InputLabel>
+                  <Select
+                    multiple
+                    value={editingProfile?.agent?.available_agents || []}
+                    onChange={(e) => setEditingProfile(prev => prev ? {
+                      ...prev,
+                      agent: { 
+                        ...prev.agent, 
+                        available_agents: e.target.value as string[] 
+                      }
+                    } : null)}
+                    input={<OutlinedInput label="Available Agent Profiles" />}
+                    renderValue={(selected) => (
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                        {(selected as string[]).map((value) => (
+                          <Chip key={value} label={value} />
+                        ))}
+                      </Box>
+                    )}
+                  >
+                    {profiles.filter(p => p.name !== editingProfile?.name).map((profile) => (
+                      <MenuItem key={profile.name} value={profile.name}>
+                        {profile.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                
+                <FormControl fullWidth sx={{ mt: 2 }}>
+                  <InputLabel>Delegation Strategy</InputLabel>
+                  <Select
+                    value={editingProfile?.agent?.delegation_strategy || 'automatic'}
+                    onChange={(e) => setEditingProfile(prev => prev ? {
+                      ...prev,
+                      agent: { 
+                        ...prev.agent, 
+                        delegation_strategy: e.target.value as 'automatic' | 'specified'
+                      }
+                    } : null)}
+                    label="Delegation Strategy"
+                  >
+                    <MenuItem value="automatic">Automatic (manager decides)</MenuItem>
+                    <MenuItem value="specified">Specified (user provides guidance)</MenuItem>
+                  </Select>
+                </FormControl>
+                
+                <FormControl fullWidth sx={{ mt: 2 }}>
+                  <InputLabel>Show Thinking Process</InputLabel>
+                  <Select
+                    value={editingProfile?.agent?.show_thinking ? 'true' : 'false'}
+                    onChange={(e) => setEditingProfile(prev => prev ? {
+                      ...prev,
+                      agent: { 
+                        ...prev.agent, 
+                        show_thinking: e.target.value === 'true' 
+                      }
+                    } : null)}
+                    label="Show Thinking Process"
+                  >
+                    <MenuItem value="true">Yes (show detailed reasoning)</MenuItem>
+                    <MenuItem value="false">No (show only results)</MenuItem>
                   </Select>
                 </FormControl>
               </>

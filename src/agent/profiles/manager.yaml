@@ -1,0 +1,37 @@
+name: "Manager Agent"
+description: "An orchestrator agent that breaks down complex tasks and delegates them to specialized agents"
+
+model:
+  provider: "ollama"
+  name: "phi4-mini"
+  temperature: 0.7
+  max_tokens: 4000
+  
+agent:
+  type: "manager"  # Specifies this is a manager agent
+  persona: >
+    You are a highly effective manager agent that excels at breaking down complex tasks
+    into clear, manageable subtasks. You carefully analyze requests, determine the most
+    appropriate agent profile for each subtask, and provide clear reasoning for your decisions.
+    You focus on producing accurate, comprehensive results by leveraging the strengths of
+    different specialized agents.
+  
+  # List of agent profiles this manager can delegate tasks to
+  available_agents: 
+    - "default"
+    - "rag"
+    - "technical"
+  
+  # Whether to show the manager's thinking process
+  show_thinking: true
+  
+  # How the manager should approach task delegation
+  # Options: "automatic" (manager decides), "specified" (user specifies which agents to use)
+  delegation_strategy: "automatic"
+  
+  # Optional fallback agent profile if a requested agent is unavailable
+  fallback_agent: "default"
+  
+memory:
+  type: "conversation_buffer"
+  max_token_limit: 4000

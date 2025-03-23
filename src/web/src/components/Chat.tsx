@@ -1,6 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Box, TextField, IconButton, Paper, Typography, Select, MenuItem, FormControl, InputLabel, CircularProgress } from '@mui/material';
+import { Box, TextField, IconButton, Typography, Select, MenuItem, FormControl, InputLabel, CircularProgress, Collapse, Divider, Chip, Tab, Tabs, Accordion, AccordionSummary, AccordionDetails } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import AssignmentIcon from '@mui/icons-material/Assignment';
+import AutoGraphIcon from '@mui/icons-material/AutoGraph';
+import PsychologyIcon from '@mui/icons-material/Psychology';
 import { styled } from '@mui/material/styles';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -136,9 +140,59 @@ const WelcomeContainer = styled(Box)(({ theme }) => ({
   color: theme.palette.text.secondary,
 }));
 
+// New styled components for manager agent
+const ManagerMessageContainer = styled(Box)(({ theme }) => ({
+  display: 'flex',
+  flexDirection: 'column',
+  width: '100%',
+}));
+
+const TaskSection = styled(Box)(({ theme }) => ({
+  marginTop: '12px',
+  borderRadius: '8px',
+  overflow: 'hidden',
+  border: `1px solid ${theme.palette.divider}`,
+}));
+
+const ThinkingSection = styled(Box)(({ theme }) => ({
+  marginTop: '12px',
+  padding: '12px',
+  backgroundColor: 'rgba(45, 55, 72, 0.5)',
+  borderRadius: '8px',
+  border: `1px solid ${theme.palette.divider}`,
+}));
+
+const TaskResult = styled(Box)(({ theme }) => ({
+  padding: '12px',
+  marginTop: '8px',
+  backgroundColor: theme.palette.background.paper,
+  borderRadius: '6px',
+  border: `1px solid ${theme.palette.divider}`,
+}));
+
+const TaskChip = styled(Chip)(({ theme }) => ({
+  margin: '4px',
+  backgroundColor: theme.palette.primary.dark,
+}));
+
+const StyledAccordion = styled(Accordion)(({ theme }) => ({
+  backgroundColor: 'rgba(30, 41, 59, 0.7)',
+  color: theme.palette.text.primary,
+  '&:before': {
+    display: 'none',
+  },
+  '& .MuiAccordionSummary-root': {
+    minHeight: '48px',
+  },
+  '& .MuiAccordionDetails-root': {
+    padding: '8px 16px 16px',
+  },
+}));
+
 interface Message {
   text: string;
   isUser: boolean;
+  profileType?: string; // Add profileType to track if message is from manager
 }
 
 interface ChatProps {
@@ -155,7 +209,167 @@ const Chat: React.FC<ChatProps> = ({ onSendMessage, sessionId, profile, profiles
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isStartingNewChat, setIsStartingNewChat] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState(profile);
+  const [expandedTasks, setExpandedTasks] = useState<{[key: string]: boolean}>({});
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
+
+  // Function to check if a message is from a manager agent and contains tasks
+  const isManagerMessage = (message: string): boolean => {
+    return message.includes('# Task Results') || 
+           message.includes('# Thinking Process') || 
+           message.includes('TASK PLAN:');
+  };
+
+  // Function to parse and render manager agent messages
+  const renderManagerMessage = (message: string) => {
+    // Check for task sections
+    const hasThinkingProcess = message.includes('# Thinking Process');
+    const hasTaskResults = message.includes('# Task Results');
+    
+    // Split the message into sections
+    let mainContent = message;
+    let thinkingContent = '';
+    let taskResults = '';
+    
+    if (hasThinkingProcess) {
+      const parts = message.split('# Thinking Process');
+      mainContent = parts[0].trim();
+      const remainingContent = parts[1];
+      
+      if (hasTaskResults) {
+        const taskParts = remainingContent.split('# Task Results');
+        thinkingContent = taskParts[0].trim();
+        taskResults = taskParts[1].trim();
+      } else {
+        thinkingContent = remainingContent.trim();
+      }
+    } else if (hasTaskResults) {
+      const parts = message.split('# Task Results');
+      mainContent = parts[0].trim();
+      taskResults = parts[1].trim();
+    }
+    
+    // Parse task results into separate tasks if possible
+    const taskItems: {id: string, title: string, content: string, agent: string, status: string}[] = [];
+    
+    if (taskResults) {
+      // Use regex to extract task information
+      const taskRegex = /## Task (\d+): (.*?)(?=\n)/g;
+      const statusRegex = /Status: (.*?)(?=\n)/g;
+      const agentRegex = /Agent: (.*?)(?=\n)/g;
+      const resultRegex = /Result: (.*?)(?=(?:## Task \d+:|$))/gs;
+      
+      let taskMatch;
+      let i = 0;
+      const taskContent = taskResults.split('## Task');
+      
+      // Extract tasks one by one
+      while ((taskMatch = taskRegex.exec(taskResults)) !== null) {
+        const taskId = `task-${i}`;
+        const taskNumber = taskMatch[1];
+        const taskTitle = taskMatch[2];
+        
+        // Find corresponding content for this task
+        const fullTaskContent = taskContent[parseInt(taskNumber)];
+        if (fullTaskContent) {
+          const statusMatch = /Status: (.*?)(?=\n)/.exec(fullTaskContent);
+          const agentMatch = /Agent: (.*?)(?=\n)/.exec(fullTaskContent);
+          const resultMatch = /Result: ([\s\S]*)/.exec(fullTaskContent);
+          
+          taskItems.push({
+            id: taskId,
+            title: taskTitle,
+            agent: agentMatch ? agentMatch[1].trim() : 'Unknown',
+            status: statusMatch ? statusMatch[1].trim() : 'Unknown',
+            content: resultMatch ? resultMatch[1].trim() : 'No result found'
+          });
+        }
+        i++;
+      }
+    }
+    
+    // Toggle task expansion
+    const handleToggleTask = (taskId: string) => {
+      setExpandedTasks(prev => ({
+        ...prev,
+        [taskId]: !prev[taskId]
+      }));
+    };
+    
+    return (
+      <ManagerMessageContainer>
+        {/* Main reasoning content */}
+        <MarkdownContent>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {mainContent}
+          </ReactMarkdown>
+        </MarkdownContent>
+        
+        {/* Task section */}
+        {taskItems.length > 0 && (
+          <TaskSection>
+            <Box sx={{ p: 1, display: 'flex', alignItems: 'center', backgroundColor: 'rgba(25, 118, 210, 0.1)' }}>
+              <AssignmentIcon sx={{ mr: 1 }} />
+              <Typography variant="subtitle1">
+                Manager delegated {taskItems.length} task{taskItems.length > 1 ? 's' : ''}
+              </Typography>
+            </Box>
+            
+            <Divider />
+            
+            {taskItems.map((task) => (
+              <StyledAccordion 
+                key={task.id}
+                expanded={expandedTasks[task.id] || false}
+                onChange={() => handleToggleTask(task.id)}
+              >
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                    <Typography sx={{ flexGrow: 1 }}>{task.title}</Typography>
+                    <TaskChip 
+                      size="small" 
+                      label={task.agent}
+                      sx={{ mr: 1 }}
+                    />
+                    <Chip 
+                      size="small" 
+                      label={task.status} 
+                      color={task.status === 'success' ? 'success' : 'error'}
+                    />
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <MarkdownContent>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {task.content}
+                    </ReactMarkdown>
+                  </MarkdownContent>
+                </AccordionDetails>
+              </StyledAccordion>
+            ))}
+          </TaskSection>
+        )}
+        
+        {/* Thinking process section */}
+        {thinkingContent && (
+          <StyledAccordion>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <PsychologyIcon sx={{ mr: 1 }} />
+                <Typography>Thinking Process</Typography>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              <MarkdownContent>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {thinkingContent}
+                </ReactMarkdown>
+              </MarkdownContent>
+            </AccordionDetails>
+          </StyledAccordion>
+        )}
+      </ManagerMessageContainer>
+    );
+  };
 
   // Load chat history when switching sessions
   useEffect(() => {
@@ -302,11 +516,15 @@ const Chat: React.FC<ChatProps> = ({ onSendMessage, sessionId, profile, profiles
                   {message.isUser ? (
                     <Typography>{message.text}</Typography>
                   ) : (
-                    <MarkdownContent>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {message.text}
-                      </ReactMarkdown>
-                    </MarkdownContent>
+                    isManagerMessage(message.text) ? (
+                      renderManagerMessage(message.text)
+                    ) : (
+                      <MarkdownContent>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.text}
+                        </ReactMarkdown>
+                      </MarkdownContent>
+                    )
                   )}
                 </Box>
               </MessageBubble>

@@ -23,6 +23,11 @@ export interface ProfileConfig {
     persona: string;
     type?: string;
     tools?: string[];
+    // Manager agent specific properties
+    available_agents?: string[];
+    delegation_strategy?: 'automatic' | 'specified';
+    show_thinking?: boolean;
+    fallback_agent?: string;
   };
   memory?: {
     type: string;
